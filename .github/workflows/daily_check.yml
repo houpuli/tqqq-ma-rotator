@@ -2,9 +2,8 @@ name: Market MA Check
 
 on:
   schedule:
-    # Runs at 22:00 UTC (approx 5:00 PM EST) every Mon-Fri
     - cron: '0 22 * * 1-5'
-  workflow_dispatch: # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   run-script:
@@ -26,4 +25,5 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          URGENT_EMAIL: ${{ secrets.URGENT_EMAIL }}   # <--- Renamed
         run: python market_alert.py
