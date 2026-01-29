@@ -1,20 +1,20 @@
 import yfinance as yf
 import smtplib
 import os
-import pandas as pd  # Make sure to import pandas
+import pandas as pd
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 # --- CONFIGURATION ---
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
-EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")
+EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")  # Standard receiver
+URGENT_EMAIL = os.environ.get("URGENT_EMAIL")      # <--- Renamed from RECEIVER_2
 
 TICKERS = ["^DJI", "^IXIC"]
 
 def get_market_status(ticker):
-    # FIX: Use Ticker().history() instead of download()
-    # This avoids the "MultiIndex" formatting issue that caused the error
     stock = yf.Ticker(ticker)
     data = stock.history(period="2y")
     
@@ -25,11 +25,9 @@ def get_market_status(ticker):
     data['MA2'] = data['Close'].rolling(window=2).mean()
     data['MA210'] = data['Close'].rolling(window=210).mean()
     
-    # We need the last two days to detect a "Cross"
     today = data.iloc[-1]
     yesterday = data.iloc[-2]
     
-    # helper to ensure we get a simple True/False (scalar), not a list
     def is_below(row):
         return float(row['MA2']) < float(row['MA210'])
 
@@ -39,13 +37,11 @@ def get_market_status(ticker):
     status = "Unknown"
     cross_event = "None"
     
-    # Determine Status
     if today_below:
         status = "BELOW"
     else:
         status = "ABOVE"
 
-    # Detect Crossover
     if not yesterday_below and today_below:
         cross_event = "JUST CROSSED BELOW (Bearish Alert!)"
     elif yesterday_below and not today_below:
@@ -58,48 +54,86 @@ def get_market_status(ticker):
         "MA2": float(today['MA2']),
         "MA210": float(today['MA210']),
         "status": status,
-        "cross_event": cross_event
+        "cross_event": cross_event,
+        "is_bearish": today_below
     }
 
 def send_daily_email(reports):
     if not reports:
         return
 
-    # Check for urgent events
-    urgent_flags = [r for r in reports if r['cross_event'] != "None"]
+    # 1. Determine "Action Needed"
+    action_needed = any(r['is_bearish'] for r in reports)
     
-    if urgent_flags:
-        subject = f"⚠️ MARKET ALERT: Crossover Detected ({datetime.now().strftime('%Y-%m-%d')})"
+    # 2. Build Subject
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    if action_needed:
+        subject = f"[ACTION NEEDED] Market Alert: MA2 Below MA210 ({date_str})"
     else:
-        subject = f"Market Daily Update: {datetime.now().strftime('%Y-%m-%d')}"
+        subject = f"Market Daily Update: {date_str}"
 
-    body = "Daily Market Moving Average Report (MA2 vs MA210)\n"
-    body += "=" * 40 + "\n\n"
+    # 3. Determine Recipients
+    recipients = [EMAIL_RECEIVER]
     
-    for r in reports:
-        body += f"Symbol: {r['ticker']}\n"
-        body += f"Status: MA2 is {r['status']} MA210\n"
-        
-        if r['cross_event'] != "None":
-            body += f"EVENT:  *** {r['cross_event']} ***\n"
-        else:
-            body += f"Event:  No change in trend.\n"
-            
-        body += f"Price:  {r['price']:.2f}\n"
-        body += f"MA2:    {r['MA2']:.2f}\n"
-        body += f"MA210:  {r['MA210']:.2f}\n"
-        body += "-" * 30 + "\n\n"
+    # Only add the Urgent Email if action is needed AND the variable is set
+    if action_needed and URGENT_EMAIL:
+        recipients.append(URGENT_EMAIL)
 
-    msg = MIMEText(body)
-    msg['Subject'] = subject
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = EMAIL_RECEIVER
+    # 4. Build HTML Body
+    html_body = f"""
+    <html>
+    <body>
+        <h2>Daily Market Report ({date_str})</h2>
+    """
+    
+    if action_needed:
+        html_body += """
+        <h3 style="color: red; font-size: 20px;">
+            ⚠️ [ACTION NEEDED] BEARISH SIGNAL DETECTED
+        </h3>
+        """
+
+    html_body += "<table border='1' cellpadding='10' cellspacing='0' style='border-collapse: collapse;'>"
+    html_body += "<tr><th>Symbol</th><th>Status</th><th>Price</th><th>MA2</th><th>MA210</th><th>Event</th></tr>"
+
+    for r in reports:
+        if r['status'] == "BELOW":
+            status_style = "color: red; font-weight: bold; font-size: 18px;"
+            row_bg = "#ffe6e6"
+        else:
+            status_style = "color: green; font-weight: bold;"
+            row_bg = "#ffffff"
+
+        html_body += f"<tr style='background-color: {row_bg};'>"
+        html_body += f"<td><b>{r['ticker']}</b></td>"
+        html_body += f"<td style='{status_style}'>{r['status']}</td>"
+        html_body += f"<td>{r['price']:.2f}</td>"
+        html_body += f"<td>{r['MA2']:.2f}</td>"
+        html_body += f"<td>{r['MA210']:.2f}</td>"
+        html_body += f"<td>{r['cross_event']}</td>"
+        html_body += "</tr>"
+
+    html_body += """
+        </table>
+        <p><i>Check chart manually to confirm.</i></p>
+    </body>
+    </html>
+    """
 
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.send_message(msg)
-        print("Daily email sent successfully.")
+            
+            for receiver in recipients:
+                msg = MIMEMultipart()
+                msg['From'] = EMAIL_SENDER
+                msg['To'] = receiver
+                msg['Subject'] = subject
+                msg.attach(MIMEText(html_body, 'html'))
+                
+                server.send_message(msg)
+                print(f"Email sent to {receiver}")
+                
     except Exception as e:
         print(f"Failed to send email: {e}")
 
