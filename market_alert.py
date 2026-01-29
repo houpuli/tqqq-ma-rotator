@@ -1,6 +1,7 @@
 import yfinance as yf
 import smtplib
 import os
+import pandas as pd  # Make sure to import pandas
 from email.mime.text import MIMEText
 from datetime import datetime
 
@@ -12,21 +13,28 @@ EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")
 TICKERS = ["^DJI", "^IXIC"]
 
 def get_market_status(ticker):
-    # Fetch 2 years to ensure valid MA210
-    data = yf.download(ticker, period="2y", progress=False)
+    # FIX: Use Ticker().history() instead of download()
+    # This avoids the "MultiIndex" formatting issue that caused the error
+    stock = yf.Ticker(ticker)
+    data = stock.history(period="2y")
+    
+    if data.empty:
+        raise ValueError(f"No data found for {ticker}")
     
     # Calculate Moving Averages
     data['MA2'] = data['Close'].rolling(window=2).mean()
     data['MA210'] = data['Close'].rolling(window=210).mean()
     
     # We need the last two days to detect a "Cross"
-    # iloc[-1] is Today, iloc[-2] is Yesterday
     today = data.iloc[-1]
     yesterday = data.iloc[-2]
     
-    # define states
-    today_below = today['MA2'] < today['MA210']
-    yesterday_below = yesterday['MA2'] < yesterday['MA210']
+    # helper to ensure we get a simple True/False (scalar), not a list
+    def is_below(row):
+        return float(row['MA2']) < float(row['MA210'])
+
+    today_below = is_below(today)
+    yesterday_below = is_below(yesterday)
     
     status = "Unknown"
     cross_event = "None"
@@ -46,9 +54,9 @@ def get_market_status(ticker):
     return {
         "ticker": ticker,
         "date": today.name.strftime('%Y-%m-%d'),
-        "price": today['Close'],
-        "MA2": today['MA2'],
-        "MA210": today['MA210'],
+        "price": float(today['Close']),
+        "MA2": float(today['MA2']),
+        "MA210": float(today['MA210']),
         "status": status,
         "cross_event": cross_event
     }
@@ -57,8 +65,7 @@ def send_daily_email(reports):
     if not reports:
         return
 
-    # Create Subject Line based on urgency
-    # If ANY stock has a cross event, mark the subject as URGENT
+    # Check for urgent events
     urgent_flags = [r for r in reports if r['cross_event'] != "None"]
     
     if urgent_flags:
@@ -66,7 +73,6 @@ def send_daily_email(reports):
     else:
         subject = f"Market Daily Update: {datetime.now().strftime('%Y-%m-%d')}"
 
-    # Build Email Body
     body = "Daily Market Moving Average Report (MA2 vs MA210)\n"
     body += "=" * 40 + "\n\n"
     
@@ -103,7 +109,7 @@ def main():
         return
 
     reports = []
-    print(f"Running daily check at {datetime.now()}...")
+    print(f"Checking markets at {datetime.now()}...")
     
     for ticker in TICKERS:
         try:
@@ -113,7 +119,6 @@ def main():
         except Exception as e:
             print(f"Error checking {ticker}: {e}")
 
-    # Always send email now, regardless of alerts
     if reports:
         send_daily_email(reports)
 
