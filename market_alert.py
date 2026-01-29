@@ -5,49 +5,84 @@ from email.mime.text import MIMEText
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# These are pulled from GitHub Secrets
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
-# EMAIL_RECEIVER = "your_email@gmail.com"  # Replace with your actual email
 EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")
 
-# Tickers: Dow Jones (^DJI) and Nasdaq (^IXIC)
 TICKERS = ["^DJI", "^IXIC"]
 
-def get_ma_data(ticker):
-    # Fetch 2 years to ensure we have enough data for a 210-day moving average
+def get_market_status(ticker):
+    # Fetch 2 years to ensure valid MA210
     data = yf.download(ticker, period="2y", progress=False)
     
     # Calculate Moving Averages
     data['MA2'] = data['Close'].rolling(window=2).mean()
-    data['MA3'] = data['Close'].rolling(window=3).mean()
-    data['MA210'] = data['Close'].rolling(window=210).mean() # Updated to 210
+    data['MA210'] = data['Close'].rolling(window=210).mean()
     
-    latest = data.iloc[-1]
+    # We need the last two days to detect a "Cross"
+    # iloc[-1] is Today, iloc[-2] is Yesterday
+    today = data.iloc[-1]
+    yesterday = data.iloc[-2]
     
+    # define states
+    today_below = today['MA2'] < today['MA210']
+    yesterday_below = yesterday['MA2'] < yesterday['MA210']
+    
+    status = "Unknown"
+    cross_event = "None"
+    
+    # Determine Status
+    if today_below:
+        status = "BELOW"
+    else:
+        status = "ABOVE"
+
+    # Detect Crossover
+    if not yesterday_below and today_below:
+        cross_event = "JUST CROSSED BELOW (Bearish Alert!)"
+    elif yesterday_below and not today_below:
+        cross_event = "JUST CROSSED ABOVE (Bullish Alert!)"
+        
     return {
         "ticker": ticker,
-        "price": latest['Close'],
-        "MA2": latest['MA2'],
-        "MA3": latest['MA3'],
-        "MA210": latest['MA210'],
-        "date": latest.name.strftime('%Y-%m-%d')
+        "date": today.name.strftime('%Y-%m-%d'),
+        "price": today['Close'],
+        "MA2": today['MA2'],
+        "MA210": today['MA210'],
+        "status": status,
+        "cross_event": cross_event
     }
 
-def send_alert(alerts):
-    if not alerts:
+def send_daily_email(reports):
+    if not reports:
         return
 
-    subject = f"MARKET ALERT: MA2 below MA210 Detected"
-    body = "The following indices have crossed the threshold:\n\n"
+    # Create Subject Line based on urgency
+    # If ANY stock has a cross event, mark the subject as URGENT
+    urgent_flags = [r for r in reports if r['cross_event'] != "None"]
     
-    for alert in alerts:
-        body += f"--- {alert['ticker']} ---\n"
-        body += f"Date: {alert['date']}\n"
-        body += f"Price: {alert['price']:.2f}\n"
-        body += f"MA2:   {alert['MA2']:.2f}\n"
-        body += f"MA3:   {alert['MA3']:.2f}\n"
-        body += f"MA210: {alert['MA210']:.2f}\n\n"
+    if urgent_flags:
+        subject = f"⚠️ MARKET ALERT: Crossover Detected ({datetime.now().strftime('%Y-%m-%d')})"
+    else:
+        subject = f"Market Daily Update: {datetime.now().strftime('%Y-%m-%d')}"
+
+    # Build Email Body
+    body = "Daily Market Moving Average Report (MA2 vs MA210)\n"
+    body += "=" * 40 + "\n\n"
+    
+    for r in reports:
+        body += f"Symbol: {r['ticker']}\n"
+        body += f"Status: MA2 is {r['status']} MA210\n"
+        
+        if r['cross_event'] != "None":
+            body += f"EVENT:  *** {r['cross_event']} ***\n"
+        else:
+            body += f"Event:  No change in trend.\n"
+            
+        body += f"Price:  {r['price']:.2f}\n"
+        body += f"MA2:    {r['MA2']:.2f}\n"
+        body += f"MA210:  {r['MA210']:.2f}\n"
+        body += "-" * 30 + "\n\n"
 
     msg = MIMEText(body)
     msg['Subject'] = subject
@@ -58,34 +93,29 @@ def send_alert(alerts):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
             server.send_message(msg)
-        print("Email sent successfully.")
+        print("Daily email sent successfully.")
     except Exception as e:
         print(f"Failed to send email: {e}")
 
 def main():
-    if not EMAIL_SENDER or not EMAIL_PASSWORD:
-        print("Error: Email credentials not found in environment variables.")
+    if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECEIVER]):
+        print("Error: Missing environment variables.")
         return
 
-    alerts = []
-    print(f"Checking markets at {datetime.now()}...")
+    reports = []
+    print(f"Running daily check at {datetime.now()}...")
     
     for ticker in TICKERS:
         try:
-            data = get_ma_data(ticker)
-            
-            # Logic: Send alarm if MA2 is below MA210
-            if data['MA2'] < data['MA210']:
-                print(f"[ALERT] {ticker}: MA2 ({data['MA2']:.2f}) < MA210 ({data['MA210']:.2f})")
-                alerts.append(data)
-            else:
-                print(f"[OK] {ticker}: MA2 is above MA210")
-                
+            report = get_market_status(ticker)
+            reports.append(report)
+            print(f"Processed {ticker}: {report['status']}")
         except Exception as e:
             print(f"Error checking {ticker}: {e}")
 
-    if alerts:
-        send_alert(alerts)
+    # Always send email now, regardless of alerts
+    if reports:
+        send_daily_email(reports)
 
 if __name__ == "__main__":
     main()
