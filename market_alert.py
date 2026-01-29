@@ -8,7 +8,8 @@ from datetime import datetime
 # These are pulled from GitHub Secrets
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
-EMAIL_RECEIVER = "your_email@gmail.com"  # Replace with your actual email
+# EMAIL_RECEIVER = "your_email@gmail.com"  # Replace with your actual email
+EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")
 
 # Tickers: Dow Jones (^DJI) and Nasdaq (^IXIC)
 TICKERS = ["^DJI", "^IXIC"]
