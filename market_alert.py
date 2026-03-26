@@ -9,8 +9,8 @@ from datetime import datetime
 # --- CONFIGURATION ---
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
-EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")  # Standard receiver
-URGENT_EMAIL = os.environ.get("URGENT_EMAIL")      # <--- Renamed from RECEIVER_2
+EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER")
+URGENT_EMAIL = os.environ.get("URGENT_EMAIL") 
 
 TICKERS = ["^DJI", "^IXIC"]
 
@@ -34,18 +34,18 @@ def get_market_status(ticker):
     today_below = is_below(today)
     yesterday_below = is_below(yesterday)
     
-    status = "Unknown"
-    cross_event = "None"
+    # SYMMETRICAL LOGIC: Explicitly track both Buy and Sell signals
+    buy_signal = yesterday_below and not today_below
+    sell_signal = not yesterday_below and today_below
     
-    if today_below:
-        status = "BELOW"
+    status = "BELOW" if today_below else "ABOVE"
+    
+    if sell_signal:
+        cross_event = "JUST CROSSED BELOW (🔴 SELL SIGNAL!)"
+    elif buy_signal:
+        cross_event = "JUST CROSSED ABOVE (🟢 BUY SIGNAL!)"
     else:
-        status = "ABOVE"
-
-    if not yesterday_below and today_below:
-        cross_event = "JUST CROSSED BELOW (Bearish Alert!)"
-    elif yesterday_below and not today_below:
-        cross_event = "JUST CROSSED ABOVE (Bullish Alert!)"
+        cross_event = "None"
         
     return {
         "ticker": ticker,
@@ -55,27 +55,36 @@ def get_market_status(ticker):
         "MA210": float(today['MA210']),
         "status": status,
         "cross_event": cross_event,
-        "is_bearish": today_below
+        "buy_signal": buy_signal,
+        "sell_signal": sell_signal,
+        "is_below": today_below
     }
 
 def send_daily_email(reports):
     if not reports:
         return
 
-    # 1. Determine "Action Needed"
-    action_needed = any(r['is_bearish'] for r in reports)
+    # 1. Determine trigger states
+    urgent_buy = any(r['buy_signal'] for r in reports)
+    urgent_sell = any(r['sell_signal'] for r in reports)
+    currently_below = any(r['is_below'] for r in reports)
     
-    # 2. Build Subject
+    # Action needed if there's a new signal OR the market is currently below MA210
+    action_needed = urgent_buy or urgent_sell or currently_below
+    
+    # 2. Build Subject Line 
     date_str = datetime.now().strftime('%Y-%m-%d')
-    if action_needed:
-        subject = f"[ACTION NEEDED] Market Alert: MA2 Below MA210 ({date_str})"
+    if urgent_buy:
+        subject = f"🟢 [BUY SIGNAL] Market Alert: MA2 Crossed Above MA210 ({date_str})"
+    elif urgent_sell:
+        subject = f"🔴 [SELL SIGNAL] Market Alert: MA2 Crossed Below MA210 ({date_str})"
+    elif currently_below:
+        subject = f"⚠️ [ACTION NEEDED] Market Alert: MA2 is Below MA210 ({date_str})"
     else:
         subject = f"Market Daily Update: {date_str}"
 
     # 3. Determine Recipients
     recipients = [EMAIL_RECEIVER]
-    
-    # Only add the Urgent Email if action is needed AND the variable is set
     if action_needed and URGENT_EMAIL:
         recipients.append(URGENT_EMAIL)
 
@@ -86,10 +95,24 @@ def send_daily_email(reports):
         <h2>Daily Market Report ({date_str})</h2>
     """
     
-    if action_needed:
+    # Add Symmetrical Header Warnings
+    if urgent_buy:
+        html_body += """
+        <h3 style="color: #009900; font-size: 20px;">
+            🟢 [BUY SIGNAL] MA2 HAS CROSSED ABOVE MA210 - ADVISE TO PURCHASE
+        </h3>
+        """
+    if urgent_sell:
         html_body += """
         <h3 style="color: red; font-size: 20px;">
-            ⚠️ [ACTION NEEDED] BEARISH SIGNAL DETECTED
+            🔴 [SELL SIGNAL] MA2 HAS CROSSED BELOW MA210 - ADVISE TO SELL
+        </h3>
+        """
+    elif currently_below and not urgent_sell:
+        # Warning for days where it is below, but didn't *just* cross
+        html_body += """
+        <h3 style="color: darkorange; font-size: 20px;">
+            ⚠️ [WARNING] MA2 IS CURRENTLY BELOW MA210
         </h3>
         """
 
@@ -97,9 +120,16 @@ def send_daily_email(reports):
     html_body += "<tr><th>Symbol</th><th>Status</th><th>Price</th><th>MA2</th><th>MA210</th><th>Event</th></tr>"
 
     for r in reports:
-        if r['status'] == "BELOW":
+        # Style logic: Highlight the specific rows with the active signals
+        if r['buy_signal']:
+            status_style = "color: #009900; font-weight: bold; font-size: 18px;"
+            row_bg = "#e6ffe6" # Light green
+        elif r['sell_signal']:
             status_style = "color: red; font-weight: bold; font-size: 18px;"
-            row_bg = "#ffe6e6"
+            row_bg = "#ffe6e6" # Light red
+        elif r['status'] == "BELOW":
+            status_style = "color: red; font-weight: bold; font-size: 18px;"
+            row_bg = "#fff5f5" # Very faint red for ongoing below status
         else:
             status_style = "color: green; font-weight: bold;"
             row_bg = "#ffffff"
@@ -110,7 +140,7 @@ def send_daily_email(reports):
         html_body += f"<td>{r['price']:.2f}</td>"
         html_body += f"<td>{r['MA2']:.2f}</td>"
         html_body += f"<td>{r['MA210']:.2f}</td>"
-        html_body += f"<td>{r['cross_event']}</td>"
+        html_body += f"<td><b>{r['cross_event']}</b></td>"
         html_body += "</tr>"
 
     html_body += """
